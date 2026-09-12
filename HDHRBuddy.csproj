@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <Nullable>enable</Nullable>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <DockerDefaultTargetOS>Linux</DockerDefaultTargetOS>
+        <Title>HDHRBuddy</Title>
+        <Authors>Luca Polesel</Authors>
+        <Description>Your HDHomeRun guide bud.</Description>
+        <RepositoryUrl>http://github.com/lucapolesel/HDHRBuddy</RepositoryUrl>
+    </PropertyGroup>
+
+</Project>

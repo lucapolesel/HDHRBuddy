@@ -1,0 +1,23 @@
+﻿services:
+  hdhrbuddy:
+    image: hdhrbuddy
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hdhrbuddy
+    restart: unless-stopped
+    environment:
+      TUNER_ADDRESSES: 192.168.0.121
+      MIN_DELAY_HOURS: 20
+      MAX_DELAY_HOURS: 28
+      CONFIG_DIR: /config
+      DATA_DIR: /data
+    ports:
+      - "8080:8080"
+    volumes:
+      - hdhrbuddy-config:/config
+      - hdhrbuddy-data:/data
+
+volumes:
+  hdhrbuddy-config:
+  hdhrbuddy-data:
