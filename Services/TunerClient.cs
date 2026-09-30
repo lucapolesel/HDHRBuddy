@@ -1,5 +1,6 @@
 ﻿using HDHRBuddy.Models;
 using System.Net;
+using System.Xml;
 using System.Xml.Linq;
 
 namespace HDHRBuddy.Services;
@@ -8,7 +9,7 @@ public class TunerClient
 {
     private static readonly TimeSpan DiscoverTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan GuideDownloadTimeout = TimeSpan.FromMinutes(5);
-    
+
     private readonly HttpClient _client;
     private readonly ILogger<TunerClient> _logger;
 
@@ -16,9 +17,10 @@ public class TunerClient
     {
         _logger = logger;
 
-        _client = new HttpClient(new HttpClientHandler
+        _client = new HttpClient(new SocketsHttpHandler
         {
-            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
+            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
+            PooledConnectionLifetime = TimeSpan.FromMinutes(15)
         })
         {
             Timeout = GuideDownloadTimeout
@@ -35,19 +37,19 @@ public class TunerClient
         {
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeoutCts.CancelAfter(DiscoverTimeout);
-            
+
             var discoveryUrl = $"http://{address}/discover.json";
 
             using var response = await _client
                 .GetAsync(discoveryUrl, timeoutCts.Token)
                 .ConfigureAwait(false);
-            
+
             response.EnsureSuccessStatusCode();
-            
+
             var deviceDiscover = await response.Content
                 .ReadFromJsonAsync<Discover>(timeoutCts.Token)
                 .ConfigureAwait(false);
-            
+
             // Validate the required fields
             if (deviceDiscover is null
                 || string.IsNullOrWhiteSpace(deviceDiscover.DeviceID)
@@ -58,10 +60,10 @@ public class TunerClient
                     address);
                 return null;
             }
-            
+
             return deviceDiscover;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
         {
             _logger.LogDebug(ex, "No usable HDHomeRun tuner at {Address}", address);
         }
@@ -69,22 +71,41 @@ public class TunerClient
         return null;
     }
 
-    public async Task<XDocument> DownloadGuideAsync(string deviceAuth, CancellationToken cancellationToken)
+    public async Task<byte[]> DownloadGuideAsync(IEnumerable<string> deviceAuths, CancellationToken cancellationToken)
     {
+        var deviceAuth = string.Concat(deviceAuths);
         var url = $"https://api.hdhomerun.com/api/xmltv?DeviceAuth={Uri.EscapeDataString(deviceAuth)}";
 
         using var response = await _client
-            .GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+            .GetAsync(url, cancellationToken)
             .ConfigureAwait(false);
 
         response.EnsureSuccessStatusCode();
 
-        await using var stream = await response.Content
-            .ReadAsStreamAsync(cancellationToken)
+        var bytes = await response.Content
+            .ReadAsByteArrayAsync(cancellationToken)
             .ConfigureAwait(false);
-        
-        return await XDocument
-            .LoadAsync(stream, LoadOptions.None, cancellationToken)
-            .ConfigureAwait(false);
+
+        // Make sure we got an actual XMLTV document before overwriting the last good one
+        using var stream = new MemoryStream(bytes, writable: false);
+
+        XDocument document;
+
+        try
+        {
+            document = XDocument.Load(stream, LoadOptions.None);
+        }
+        catch (XmlException ex)
+        {
+            throw new InvalidDataException("The guide response is not valid XML.", ex);
+        }
+
+        if (document.Root?.Name.LocalName != "tv")
+        {
+            throw new InvalidDataException(
+                $"Unexpected guide root element <{document.Root?.Name.LocalName}>, expected <tv>.");
+        }
+
+        return bytes;
     }
 }

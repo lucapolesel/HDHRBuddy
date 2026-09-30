@@ -1,8 +1,5 @@
-﻿using System.Text;
-using HDHRBuddy.Models;
+﻿using HDHRBuddy.Models;
 using System.Text.Json;
-using System.Xml;
-using System.Xml.Linq;
 
 namespace HDHRBuddy.Services;
 
@@ -13,188 +10,163 @@ public class GuideRefreshWorker(
     ILogger<GuideRefreshWorker> logger)
     : BackgroundService
 {
+    /// <summary>
+    /// How often to retry when no configured tuner can be reached.
+    /// </summary>
+    private static readonly TimeSpan TunerRetryDelay = TimeSpan.FromMinutes(5);
+
+    private static readonly TimeSpan[] RetryBackoff =
+    [
+        TimeSpan.FromMinutes(15),
+        TimeSpan.FromHours(1),
+        TimeSpan.FromHours(4)
+    ];
+
+    private static readonly JsonSerializerOptions StateJsonOptions = new() { WriteIndented = true };
+
     private GuideState _state = new();
 
     protected override async Task ExecuteAsync(CancellationToken cancellationToken)
     {
         cache.LoadFromDisk();
         _state = LoadState();
-        
-        // TODO: Add manual refresh
 
-        while (!cancellationToken.IsCancellationRequested)
+        // Nothing to serve so fetch right away.
+        if (!cache.HasData)
         {
-            var delay = _state.NextRunUtc.HasValue
-                ? _state.NextRunUtc.Value - DateTime.UtcNow
-                : TimeSpan.Zero;
+            _state.NextRunUtc = null;
+        }
 
-            if (delay > TimeSpan.Zero)
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
             {
-                try
+                var delay = _state.NextRunUtc.HasValue
+                    ? _state.NextRunUtc.Value - DateTime.UtcNow
+                    : TimeSpan.Zero;
+
+                if (delay > TimeSpan.Zero)
                 {
                     await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
                 }
-                catch (OperationCanceledException)
-                {
-                    if (cancellationToken.IsCancellationRequested)
-                    {
-                        break;
-                    }
 
-                    logger.LogInformation("Refresh triggered manually before its scheduled time.");
-                }
+                await RunOnceAsync(cancellationToken).ConfigureAwait(false);
+
+                SaveState();
             }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            //
+        }
+    }
 
-            if (cancellationToken.IsCancellationRequested)
+    private async Task RunOnceAsync(CancellationToken cancellationToken)
+    {
+        var addresses = options.TunerAddresses
+            .Where(a => !string.IsNullOrWhiteSpace(a))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (addresses.Count == 0)
+        {
+            logger.LogWarning(
+                "No HDHomeRun tuner address configured. Please set `TUNER_ADDRESSES`. Retrying in 5 minutes..");
+
+            _state.NextRunUtc = DateTime.UtcNow.Add(TunerRetryDelay);
+            return;
+        }
+
+        var devices = new List<Discover>();
+
+        foreach (var address in addresses)
+        {
+            var result = await tunerClient
+                .TryGetDeviceAuthAsync(address, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (result is not null)
             {
-                break;
+                devices.Add(result);
             }
-
-            var addresses = options.TunerAddresses
-                .Where(a => !string.IsNullOrWhiteSpace(a))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            
-            if (addresses.Count == 0)
+            else
             {
                 logger.LogWarning(
-                    "No HDHomeRun tuner address configured. Please set `TUNER_ADDRESSES`. Retrying in 5 minutes..");
-                _state.NextRunUtc = DateTime.UtcNow.AddMinutes(5);
-                SaveState();
-                continue;
+                    "Could not fetch `discover.json` from HDHomeRun tuner at {Address}. Skipping it..",
+                    address);
             }
-            
-            // Parse `discover.json` off each tuner in order to mainly obtain the updated DeviceAuth field
-            var deviceDiscovers = new List<Discover>();
-
-            foreach (var address in addresses)
-            {
-                var result = await tunerClient
-                    .TryGetDeviceAuthAsync(address, cancellationToken)
-                    .ConfigureAwait(false);
-
-                if (result != null)
-                {
-                    deviceDiscovers.Add(result);
-                }
-                else
-                {
-                    logger.LogWarning(
-                        "Could not fetch `discover.json` from HDHomeRun tuner at {Address}. Skipping it..",
-                        address);
-                }
-            }
-
-            _state.LastRunUtc = DateTime.UtcNow;
-            
-            // If no tuner has been `discovered` then retry in 5 minutes
-            if (deviceDiscovers.Count == 0)
-            {
-                logger.LogError("Could not reach any configured HDHomeRun tuner. Retrying in 5 minutes..");
-                _state.NextRunUtc = DateTime.UtcNow.AddMinutes(5);
-                SaveState();
-                continue;
-            }
-
-            try
-            {
-                var guides = new List<XDocument>();
-
-                // If we found some tuners then obtain their respective XMLTV file
-                foreach (var device in deviceDiscovers)
-                {
-                    try
-                    {
-                        // Download the XMLTV file
-                        var guide = await tunerClient
-                            .DownloadGuideAsync(device.DeviceAuth, cancellationToken)
-                            .ConfigureAwait(false);
-                        
-                        // Add it to the list in order to merge it later on
-                        guides.Add(guide);
-                    
-                        logger.LogInformation(
-                            "Downloaded XMLTV guide for tuner {DeviceID}.",
-                            device.DeviceID);
-                    }
-                    catch (Exception ex)
-                    {
-                        logger.LogError(ex,
-                            "Could not download XMLTV guide for tuner {DeviceID}",
-                            device.DeviceID);
-                    }
-                }
-                
-                // Merge each guide
-                if (guides.Count == 0)
-                {
-                    // TODO: Schedule the next attempt in a few hours?
-                    throw new InvalidOperationException("No guide were provided.");
-                }
-                
-                // Get the root of the first guide
-                var root = guides[0].Root
-                    ?? throw new InvalidOperationException("Could not find the first guide's root.");
-                
-                // Merge the channels
-                var channels = guides
-                    .SelectMany(d => d.Root?.Elements("channel") ?? [])
-                    .GroupBy(c => (string?)c.Attribute("id"))
-                    .Select(g => g.First())
-                    .ToList();
-                
-                // Merge the programs
-                var programs = guides
-                    .SelectMany(d => d.Root?.Elements("programme") ?? [])
-                    .GroupBy(p => new
-                    {
-                        Channel = (string?)p.Attribute("channel"),
-                        // I don't think there's any need to parse the date (should have the same timestamp format)
-                        Start = (string?)p.Attribute("start")
-                    })
-                    .Select(g => g.First())
-                    .OrderBy(p => (string?)p.Attribute("start"))
-                    .ToList();
-                
-                // Build the merged guide
-                var mergedGuide = new XDocument(
-                    new XDeclaration("1.0", "utf-8", null),
-                    new XElement(
-                        root.Name,
-                        root.Attributes(),
-                        channels,
-                        programs
-                    )
-                );
-                
-                // Serialize the merged guide to UTF-8 bytes
-                var settings = new XmlWriterSettings
-                {
-                    Encoding = new UTF8Encoding(false),
-                    Indent = true,
-                    Async = true
-                };
-
-                using var output = new MemoryStream();
-
-                await using (var writer = XmlWriter.Create(output, settings))
-                {
-                    await mergedGuide.SaveAsync(writer, cancellationToken);
-                }
-                
-                // Save it to disk
-                await cache.SetAsync(output.ToArray(), cancellationToken);
-                
-                _state.LastSuccessUtc = DateTime.UtcNow;
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(ex, "Failed to download XMLTV guide.");
-            }
-            
-            ScheduleNextRandomRun();
-            SaveState();
         }
+
+        if (devices.Count == 0)
+        {
+            logger.LogError("Could not reach any configured HDHomeRun tuner. Retrying in 5 minutes..");
+
+            _state.NextRunUtc = DateTime.UtcNow.Add(TunerRetryDelay);
+            return;
+        }
+
+        var isPartial = devices.Count < addresses.Count;
+
+        _state.LastRunUtc = DateTime.UtcNow;
+
+        try
+        {
+            var bytes = await tunerClient
+                .DownloadGuideAsync(devices.Select(d => d.DeviceAuth!), cancellationToken)
+                .ConfigureAwait(false);
+
+            await cache.SetAsync(bytes, cancellationToken).ConfigureAwait(false);
+
+            _state.LastSuccessUtc = DateTime.UtcNow;
+
+            logger.LogInformation(
+                "Downloaded XMLTV guide for tuner(s) {DeviceIDs} ({Size:N0} bytes).",
+                string.Join(", ", devices.Select(d => d.DeviceID)),
+                bytes.Length);
+        }
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            logger.LogError(ex, "Failed to download XMLTV guide.");
+
+            ScheduleRetry(giveUpAfterBackoff: false);
+            return;
+        }
+
+        if (isPartial)
+        {
+            logger.LogWarning(
+                "Guide saved, but only {Reached} of {Configured} tuner(s) were reachable.",
+                devices.Count,
+                addresses.Count);
+
+            ScheduleRetry(giveUpAfterBackoff: true);
+            return;
+        }
+
+        _state.ConsecutiveFailures = 0;
+        ScheduleNextRandomRun();
+    }
+
+    private void ScheduleRetry(bool giveUpAfterBackoff)
+    {
+        var attempt = _state.ConsecutiveFailures++;
+
+        if (attempt >= RetryBackoff.Length && giveUpAfterBackoff)
+        {
+            _state.ConsecutiveFailures = 0;
+
+            ScheduleNextRandomRun();
+            return;
+        }
+
+        var delay = RetryBackoff[Math.Min(attempt, RetryBackoff.Length - 1)];
+
+        _state.NextRunUtc = DateTime.UtcNow.Add(delay);
+
+        logger.LogInformation(
+            "Retrying XMLTV guide download at {Next:u} (in {Delay}).",
+            _state.NextRunUtc,
+            delay);
     }
 
     private void ScheduleNextRandomRun()
@@ -254,14 +226,10 @@ public class GuideRefreshWorker(
         try
         {
             Directory.CreateDirectory(options.ConfigDirectory);
-            
-            var json = JsonSerializer.Serialize(_state, new JsonSerializerOptions
-            {
-                WriteIndented = true
-            });
-            
+
+            var json = JsonSerializer.Serialize(_state, StateJsonOptions);
             var tempPath = StatePath + ".tmp";
-            
+
             File.WriteAllText(tempPath, json);
             File.Move(tempPath, StatePath, true);
         }

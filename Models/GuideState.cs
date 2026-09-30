@@ -16,4 +16,9 @@ public class GuideState
     /// UTC time of the last download that completed successfully.
     /// </summary>
     public DateTime? LastSuccessUtc { get; set; }
+
+    /// <summary>
+    /// Number of consecutive attempts that failed or were incomplete.
+    /// </summary>
+    public int ConsecutiveFailures { get; set; }
 }

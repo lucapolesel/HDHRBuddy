@@ -23,10 +23,10 @@ namespace HDHRBuddy
             // Path for the combined guide
             app.MapGet("/xmltv.xml", (GuideCache cache) =>
             {
-                var bytes = cache.Get();
+                var (bytes, lastModified) = cache.Get();
                 
                 return bytes is not null
-                    ? Results.Bytes(bytes, "application/xml")
+                    ? Results.Bytes(bytes, "application/xml; charset=utf-8", lastModified: lastModified)
                     : Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
             });
 
