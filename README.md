@@ -1,7 +1,7 @@
 # HDHRBuddy
 
-HDHRBuddy is a small service that pulls the XMLTV guide data for your HDHomeRun
-tuners from SiliconDust's API and merges it into a single file, served over HTTP
+HDHRBuddy is a small service that pulls the combined XMLTV guide data for all your
+HDHomeRun tuners from SiliconDust's API as a single file, served over HTTP
 or readable directly from disk, so Jellyfin (or anything else that accepts XMLTV)
 can fetch it without relying on plugins.
 
@@ -39,7 +39,7 @@ volumes:
 
 | Route | Description |
 |---|---|
-| `GET /xmltv.xml` | The merged guide. Returns `503` until the first download completes. |
+| `GET /xmltv.xml` | The combined guide. Returns `503` until the first download completes. |
 
 ## Notes
 
