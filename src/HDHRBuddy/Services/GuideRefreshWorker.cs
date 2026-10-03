@@ -35,6 +35,14 @@ public class GuideRefreshWorker(
         if (!cache.HasData)
         {
             _state.NextRunUtc = null;
+            
+            logger.LogInformation("No cached guide found. Downloading now..");
+        }
+        else if (_state.NextRunUtc > DateTime.UtcNow)
+        {
+            logger.LogInformation(
+                "Serving cached guide. Next download scheduled for {Next:u}.",
+                _state.NextRunUtc);
         }
 
         try
