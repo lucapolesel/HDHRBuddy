@@ -25,6 +25,30 @@ volumes:
   hdhrbuddy-config:
 ```
 
+## NixOS
+
+The repository is a flake with a package and a NixOS module:
+
+```nix
+{
+  inputs.hdhrbuddy = {
+    url = "github:lucapolesel/HDHRBuddy";
+    inputs.nixpkgs.follows = "nixpkgs";
+  };
+
+  # in a NixOS configuration (imports = [ inputs.hdhrbuddy.nixosModules.default ]):
+  services.hdhrbuddy = {
+    enable = true;
+    tunerAddresses = [ "192.168.0.121" ];
+    # listenAddress = "127.0.0.1"; port = 8080; openFirewall = false;
+  };
+}
+```
+
+It runs as a sandboxed service with its state in `/var/lib/hdhrbuddy`; the guide is at
+`http://127.0.0.1:8080/xmltv.xml`. `nix run github:lucapolesel/HDHRBuddy` runs it directly,
+configured with the variables below.
+
 ## Configuration
 
 | Variable | Required | Default | Description |
