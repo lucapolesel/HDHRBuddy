@@ -1,0 +1,24 @@
+# Weekly update PRs, checked by the `check` workflow before merging.
+# The flake's flake.lock is updated by update-flake-lock.yml (Dependabot doesn't do Nix).
+version: 2
+updates:
+  # The Dockerfile's base images, pinned by digest: every patched .NET image becomes a PR.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      dotnet:
+        patterns: ["*"]
+    # A new .NET major (11.0-alpine) needs the project's TargetFramework moved too: by hand.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

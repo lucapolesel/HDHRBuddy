@@ -1,0 +1,29 @@
+name: Update flake.lock
+
+# Weekly nixpkgs update for the flake (Dependabot doesn't do Nix), as a PR. Flakes that use
+# HDHRBuddy as an input with `inputs.nixpkgs.follows` don't see this lock; `nix run` users do.
+# Needs Settings → Actions → General → "Allow GitHub Actions to create and approve pull requests".
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@v23
+      - id: update
+        uses: DeterminateSystems/update-flake-lock@v29
+        with:
+          pr-title: "Update flake.lock"
+          pr-labels: dependencies
+      # A PR opened with GITHUB_TOKEN doesn't start the `check` workflow, so build the
+      # updated lock here: a failure shows on this run, next to its PR.
+      - name: Build with the updated lock
+        run: nix build -L .#default
